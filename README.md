@@ -22,6 +22,8 @@ Le script `scrape_justetf.py` :
    - Distribution
    - Domicile du fonds
    - Promoteur
+   - Heatmap mensuelle des rendements (quand disponible)
+   - CAGR depuis la creation de l'ETF
 4. Ecrit un fichier JSON par ISIN dans le dossier de sortie.
 5. En cas d'erreurs, ecrit aussi un fichier `errors.json`.
 
@@ -50,13 +52,19 @@ Exemple fourni : `isins.json`.
 Commande de base :
 
 ```powershell
-.\.venv\Scripts\python.exe .\scrape_justetf.py .\isins.json
+python .\scrape_justetf.py .\isins.json
 ```
 
 Exemple avec options :
 
 ```powershell
-.\.venv\Scripts\python.exe .\scrape_justetf.py .\isins.json --output-dir .\resultats --delay 2.0 --timeout 45
+python .\scrape_justetf.py .\isins.json --output-dir .\resultats --delay 2.0 --timeout 45
+```
+
+Exemple avec debug (capture des reponses AJAX/Wicket utiles pour la heatmap) :
+
+```powershell
+python .\scrape_justetf.py .\isins.json --debug-dir .\debug_heatmap
 ```
 
 ## Second script : decouverte ISIN depuis tickers
@@ -83,13 +91,13 @@ Note technique : le script utilise le endpoint de "recherche rapide" charge par 
 ### Commande de base
 
 ```powershell
-.\.venv\Scripts\python.exe .\discover_isins_from_tickers.py .\tickers.json
+python .\discover_isins_from_tickers.py .\tickers.json
 ```
 
 ### Exemple avec options
 
 ```powershell
-.\.venv\Scripts\python.exe .\discover_isins_from_tickers.py .\tickers.json --output .\ticker_isin_discovery.json --delay 2.0 --page-size 100 --max-pages 30
+python .\discover_isins_from_tickers.py .\tickers.json --output .\ticker_isin_discovery.json --delay 2.0 --page-size 100 --max-pages 30
 ```
 
 ## Options disponibles
@@ -114,6 +122,10 @@ Note technique : le script utilise le endpoint de "recherche rapide" charge par 
 - `--timeout TIMEOUT`
   - Timeout HTTP en secondes pour chaque requete.
   - Valeur par defaut : `30`.
+
+- `--debug-dir DEBUG_DIR`
+  - Dossier de debug pour sauvegarder les reponses brutes HTTP (HTML/XML/cdata) utilisees par le script.
+  - Defaut : non active.
 
 - `-h` / `--help`
   - Affiche l'aide complete de la CLI.
@@ -148,6 +160,10 @@ Note technique : le script utilise le endpoint de "recherche rapide" charge par 
   - Fichier JSON contenant les erreurs par ticker.
   - Defaut : `ticker_isin_discovery_errors.json`.
 
+- `--debug-dir DEBUG_DIR`
+  - Dossier de debug pour sauvegarder les reponses de recherche.
+  - Defaut : non active.
+
 ## Structure des fichiers de sortie
 
 Pour chaque ISIN reussi, un fichier `output/<ISIN>.json` est cree avec cette structure :
@@ -168,9 +184,30 @@ Pour chaque ISIN reussi, un fichier `output/<ISIN>.json` est cree avec cette str
     "distribution": "...",
     "domicile_du_fonds": "...",
     "promoteur": "..."
+  },
+  "cagr_depuis_creation_pct": 12.34,
+  "cagr_depuis_creation_source": "heatmap_mensuelle",
+  "heatmap_mensuelle": {
+    "months": ["janv.", "..."],
+    "years": ["2024", "2025"],
+    "values": [
+      {
+        "year": "2024",
+        "month": "janv.",
+        "month_index": 1,
+        "return_pct": 1.23
+      }
+    ],
+    "source": "returnsSection:viewMode"
   }
 }
 ```
+
+Notes sur ces champs :
+
+- `heatmap_mensuelle` peut etre `null` si la donnee n'est pas disponible/capturable pour la page.
+- `cagr_depuis_creation_pct` est calcule en priorite depuis `heatmap_mensuelle`.
+- Si la heatmap est indisponible, fallback sur `MAX` + date de lancement (`cagr_depuis_creation_source = "max_return_plus_launch_date"`).
 
 Si certains ISIN echouent, un fichier `output/errors.json` est cree :
 
