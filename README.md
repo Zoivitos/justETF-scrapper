@@ -100,6 +100,29 @@ python .\discover_isins_from_tickers.py .\tickers.json
 python .\discover_isins_from_tickers.py .\tickers.json --output .\ticker_isin_discovery.json --delay 2.0 --page-size 100 --max-pages 30
 ```
 
+## Troisieme script : export CSV pour Excel
+
+Le script `export_etf_csv.py` lit tous les JSON ETF d'un dossier (par defaut `output`) et genere 2 CSV :
+
+- `etf_overview.csv`
+  - Vue de synthese ETF (ISIN, nom, indice suivi, TER, AUM, CAGR, volatilite, etc.).
+- `etf_projection.csv`
+  - Tableau de projection annuelle par ETF avec formules Excel.
+  - Inclut des cellules modifiables : capital initial, inflation, DCA mensuel, horizon.
+  - Inclut un scenario "sans frais" et le manque a gagner.
+
+### Commande de base
+
+```powershell
+python .\export_etf_csv.py
+```
+
+### Exemple avec options
+
+```powershell
+python .\export_etf_csv.py .\output --overview-csv .\etf_overview.csv --projection-csv .\etf_projection.csv --years 30 --capital-initial 10000 --inflation 0.02 --dca-mensuel 250 --ticker-map .\ticker_isin_discovery.json
+```
+
 ## Options disponibles
 
 ### Argument positionnel
@@ -163,6 +186,43 @@ python .\discover_isins_from_tickers.py .\tickers.json --output .\ticker_isin_di
 - `--debug-dir DEBUG_DIR`
   - Dossier de debug pour sauvegarder les reponses de recherche.
   - Defaut : non active.
+
+### Options du script `export_etf_csv.py`
+
+- `input_dir`
+  - Dossier contenant les fichiers JSON ETF.
+  - Argument positionnel optionnel.
+  - Defaut : `output`.
+
+- `--overview-csv OVERVIEW_CSV`
+  - Chemin du CSV de synthese.
+  - Defaut : `etf_overview.csv`.
+
+- `--projection-csv PROJECTION_CSV`
+  - Chemin du CSV de projection Excel.
+  - Defaut : `etf_projection.csv`.
+
+- `--years YEARS`
+  - Horizon de projection (en annees) pour le CSV de projection.
+  - Defaut : `30`.
+
+- `--capital-initial CAPITAL_INITIAL`
+  - Capital initial utilise dans les formules du CSV de projection.
+  - Defaut : `10000`.
+
+- `--inflation INFLATION`
+  - Inflation annuelle (format decimal).
+  - Exemple : `0.02` pour 2%.
+  - Defaut : `0.02`.
+
+- `--dca-mensuel DCA_MENSUEL`
+  - Apport mensuel ajoute chaque annee dans la projection (`DCA * 12`).
+  - Defaut : `0`.
+
+- `--ticker-map TICKER_MAP`
+  - Fichier JSON optionnel de mapping ISIN/Ticker (ex: `ticker_isin_discovery.json`).
+  - Permet de remplir la colonne `Ticker` dans `etf_overview.csv`.
+  - Defaut : non defini.
 
 ## Structure des fichiers de sortie
 
