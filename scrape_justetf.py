@@ -5,6 +5,7 @@ import html
 import http.cookiejar
 import json
 import math
+import random
 import re
 import sys
 import time
@@ -67,6 +68,11 @@ TARGET_TESTIDS = {
     "max_return": "etf-returns-section_max-return",
     "launch_date": "tl_etf-basics_value_launch-date",
 }
+
+DEFAULT_HEATMAP_TIMER_ATTEMPTS = 12
+DEFAULT_HEATMAP_TIMER_SLEEP = 0.7
+DEFAULT_HEATMAP_VIEWMODE_ATTEMPTS = 4
+DEFAULT_HEATMAP_VIEWMODE_SLEEP = 0.9
 
 
 def clean_text(value: str) -> str:
@@ -353,22 +359,34 @@ def fetch_heatmap_data(
     isin: str,
     timeout: int,
     debug_dir: Optional[Path] = None,
+    timer_attempts: int = DEFAULT_HEATMAP_TIMER_ATTEMPTS,
+    timer_retry_sleep: float = DEFAULT_HEATMAP_TIMER_SLEEP,
+    viewmode_attempts: int = DEFAULT_HEATMAP_VIEWMODE_ATTEMPTS,
+    viewmode_retry_sleep: float = DEFAULT_HEATMAP_VIEWMODE_SLEEP,
 ) -> Optional[Dict[str, object]]:
+    diagnostics: List[str] = []
     timer_url = extract_timer_ajax_url(profile_html)
     page_url = BASE_URL.format(isin=isin)
     if timer_url:
-        for attempt in range(1, 6):
-            timer_xml = client.fetch_text(
-                timer_url,
-                timeout=timeout,
-                method="GET",
-                referer=page_url,
-                accept="text/xml,application/xml,text/html,*/*;q=0.01",
-                extra_headers={
-                    "Wicket-Ajax": "true",
-                    "Wicket-Ajax-BaseURL": f"fr/etf-profile.html?isin={isin}",
-                },
-            )
+        for attempt in range(1, timer_attempts + 1):
+            try:
+                timer_xml = client.fetch_text(
+                    timer_url,
+                    timeout=timeout,
+                    method="GET",
+                    referer=page_url,
+                    accept="text/xml,application/xml,text/html,*/*;q=0.01",
+                    extra_headers={
+                        "Wicket-Ajax": "true",
+                        "Wicket-Ajax-BaseURL": f"fr/etf-profile.html?isin={isin}",
+                    },
+                )
+            except Exception as exc:
+                diagnostics.append(f"timer_attempt_{attempt}: exception={exc}")
+                if attempt < timer_attempts and timer_retry_sleep > 0:
+                    time.sleep(timer_retry_sleep)
+                continue
+
             if debug_dir:
                 (debug_dir / f"{isin}_timer_attempt_{attempt}.xml").write_text(timer_xml, encoding="utf-8")
 
@@ -384,45 +402,75 @@ def fetch_heatmap_data(
                         encoding="utf-8",
                     )
                 return heatmap_from_timer
+            diagnostics.append(
+                f"timer_attempt_{attempt}: no_heatmap cdata_len={len(timer_cdata)}"
+            )
 
             # Some responses only reschedule timer; wait and retry.
-            if "Wicket.Timer.set(" in timer_cdata and attempt < 5:
-                time.sleep(0.35)
+            if "Wicket.Timer.set(" in timer_cdata and attempt < timer_attempts and timer_retry_sleep > 0:
+                diagnostics.append(f"timer_attempt_{attempt}: rescheduled")
+                time.sleep(timer_retry_sleep)
                 continue
+    else:
+        diagnostics.append("timer_url_not_found")
 
     viewmode_url = extract_wicket_ajax_url(profile_html, "returnsSection-viewMode")
     if not viewmode_url:
+        diagnostics.append("viewmode_url_not_found")
+        if debug_dir and diagnostics:
+            (debug_dir / f"{isin}_heatmap_diagnostics.txt").write_text("\n".join(diagnostics), encoding="utf-8")
         return None
 
     payload = urlencode({"returnsSection:viewMode": "CHART"}).encode("utf-8")
-    xml_text = client.fetch_text(
-        viewmode_url,
-        timeout=timeout,
-        method="POST",
-        data=payload,
-        referer=page_url,
-        accept="text/xml,application/xml,text/html,*/*;q=0.01",
-        extra_headers={
-            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-            "Wicket-Ajax": "true",
-            "Wicket-Ajax-BaseURL": f"fr/etf-profile.html?isin={isin}",
-        },
-    )
+    for attempt in range(1, viewmode_attempts + 1):
+        try:
+            xml_text = client.fetch_text(
+                viewmode_url,
+                timeout=timeout,
+                method="POST",
+                data=payload,
+                referer=page_url,
+                accept="text/xml,application/xml,text/html,*/*;q=0.01",
+                extra_headers={
+                    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                    "Wicket-Ajax": "true",
+                    "Wicket-Ajax-BaseURL": f"fr/etf-profile.html?isin={isin}",
+                },
+            )
+        except Exception as exc:
+            diagnostics.append(f"viewmode_attempt_{attempt}: exception={exc}")
+            if attempt < viewmode_attempts and viewmode_retry_sleep > 0:
+                time.sleep(viewmode_retry_sleep)
+            continue
 
-    if debug_dir:
-        (debug_dir / f"{isin}_returns_viewmode.xml").write_text(xml_text, encoding="utf-8")
+        if debug_dir:
+            (debug_dir / f"{isin}_returns_viewmode_attempt_{attempt}.xml").write_text(xml_text, encoding="utf-8")
 
-    cdata_text = html.unescape(extract_cdata_blocks(xml_text))
-    if debug_dir and cdata_text:
-        (debug_dir / f"{isin}_returns_viewmode_cdata.txt").write_text(cdata_text, encoding="utf-8")
+        cdata_text = html.unescape(extract_cdata_blocks(xml_text))
+        if debug_dir and cdata_text:
+            (debug_dir / f"{isin}_returns_viewmode_attempt_{attempt}_cdata.txt").write_text(
+                cdata_text, encoding="utf-8"
+            )
 
-    heatmap = parse_heatmap_from_chart_script(cdata_text)
-    if debug_dir and heatmap is not None:
-        (debug_dir / f"{isin}_heatmap_extracted.json").write_text(
-            json.dumps(heatmap, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        # Fallback on full XML content in case script is not wrapped in CDATA.
+        heatmap = parse_heatmap_from_chart_script(cdata_text) or parse_heatmap_from_chart_script(html.unescape(xml_text))
+        if heatmap is not None:
+            if debug_dir:
+                (debug_dir / f"{isin}_heatmap_extracted.json").write_text(
+                    json.dumps(heatmap, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            return heatmap
+
+        diagnostics.append(
+            f"viewmode_attempt_{attempt}: no_heatmap cdata_len={len(cdata_text)} xml_len={len(xml_text)}"
         )
-    return heatmap
+        if attempt < viewmode_attempts and viewmode_retry_sleep > 0:
+            time.sleep(viewmode_retry_sleep)
+
+    if debug_dir and diagnostics:
+        (debug_dir / f"{isin}_heatmap_diagnostics.txt").write_text("\n".join(diagnostics), encoding="utf-8")
+    return None
 
 
 def compute_cagr_from_heatmap(heatmap: Optional[Dict[str, object]]) -> Optional[float]:
@@ -509,13 +557,13 @@ def main() -> int:
         "--output-dir",
         type=Path,
         default=Path("output"),
-        help="Dossier de sortie pour les fichiers <ISIN>.json (defaut: output)",
+        help="Dossier de sortie pour les fichiers <ISIN>.json (defaut: output2)",
     )
     parser.add_argument(
         "--delay",
         type=float,
-        default=0.8,
-        help="Pause (secondes) entre les requetes (defaut: 0.8)",
+        default=1.5,
+        help="Pause (secondes) entre les requetes (defaut: 1.5)",
     )
     parser.add_argument(
         "--timeout",
@@ -529,7 +577,44 @@ def main() -> int:
         default=None,
         help="Dossier de debug pour sauvegarder les reponses brutes HTTP",
     )
+    parser.add_argument(
+        "--heatmap-timer-attempts",
+        type=int,
+        default=DEFAULT_HEATMAP_TIMER_ATTEMPTS,
+        help=f"Nombre d'essais sur le timer heatmap (defaut: {DEFAULT_HEATMAP_TIMER_ATTEMPTS})",
+    )
+    parser.add_argument(
+        "--heatmap-timer-sleep",
+        type=float,
+        default=DEFAULT_HEATMAP_TIMER_SLEEP,
+        help=f"Pause en secondes entre essais timer heatmap (defaut: {DEFAULT_HEATMAP_TIMER_SLEEP})",
+    )
+    parser.add_argument(
+        "--heatmap-viewmode-attempts",
+        type=int,
+        default=DEFAULT_HEATMAP_VIEWMODE_ATTEMPTS,
+        help=f"Nombre d'essais sur le fallback viewMode heatmap (defaut: {DEFAULT_HEATMAP_VIEWMODE_ATTEMPTS})",
+    )
+    parser.add_argument(
+        "--heatmap-viewmode-sleep",
+        type=float,
+        default=DEFAULT_HEATMAP_VIEWMODE_SLEEP,
+        help=f"Pause en secondes entre essais viewMode heatmap (defaut: {DEFAULT_HEATMAP_VIEWMODE_SLEEP})",
+    )
     args = parser.parse_args()
+
+    if args.heatmap_timer_attempts < 1:
+        print("Erreur: --heatmap-timer-attempts doit etre >= 1", file=sys.stderr)
+        return 1
+    if args.heatmap_viewmode_attempts < 1:
+        print("Erreur: --heatmap-viewmode-attempts doit etre >= 1", file=sys.stderr)
+        return 1
+    if args.heatmap_timer_sleep < 0:
+        print("Erreur: --heatmap-timer-sleep doit etre >= 0", file=sys.stderr)
+        return 1
+    if args.heatmap_viewmode_sleep < 0:
+        print("Erreur: --heatmap-viewmode-sleep doit etre >= 0", file=sys.stderr)
+        return 1
 
     try:
         isins = load_isins(args.isins_json)
@@ -566,8 +651,14 @@ def main() -> int:
                 isin=isin,
                 timeout=args.timeout,
                 debug_dir=args.debug_dir,
+                timer_attempts=args.heatmap_timer_attempts,
+                timer_retry_sleep=args.heatmap_timer_sleep,
+                viewmode_attempts=args.heatmap_viewmode_attempts,
+                viewmode_retry_sleep=args.heatmap_viewmode_sleep,
             )
             parsed["heatmap_mensuelle"] = heatmap
+            if heatmap is None:
+                print("  INFO: heatmap indisponible apres retries (timer/viewMode).")
 
             cagr_from_heatmap = compute_cagr_from_heatmap(heatmap)
             if cagr_from_heatmap is not None:
@@ -599,7 +690,8 @@ def main() -> int:
             print(f"  ERREUR: {exc}", file=sys.stderr)
 
         if idx < len(isins) and args.delay > 0:
-            time.sleep(args.delay)
+            jittered_delay = max(0.0, args.delay + random.uniform(-0.5, 0.5))
+            time.sleep(jittered_delay)
 
     if errors:
         errors_path = args.output_dir / "errors.json"

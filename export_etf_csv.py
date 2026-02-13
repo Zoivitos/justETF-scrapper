@@ -236,6 +236,33 @@ def fmt_number(value: Optional[float], ndigits: int = 6) -> str:
     return text.replace(".", ",")
 
 
+def adjust_projection_cagr_pct(
+    cagr_pct: float,
+    mode: str,
+    hard_cap_pct: Optional[float] = None,
+    dynamic_start_pct: Optional[float] = None,
+    dynamic_max_pct: Optional[float] = None,
+) -> float:
+    if mode == "raw":
+        return cagr_pct
+
+    if mode == "hard-cap":
+        assert hard_cap_pct is not None
+        return min(cagr_pct, hard_cap_pct)
+
+    if mode == "dynamic-cap":
+        assert dynamic_start_pct is not None
+        assert dynamic_max_pct is not None
+        if cagr_pct <= dynamic_start_pct:
+            return cagr_pct
+        gap = dynamic_max_pct - dynamic_start_pct
+        excess = cagr_pct - dynamic_start_pct
+        # Compression exponentielle: approche du plafond sans jamais l'atteindre.
+        return dynamic_start_pct + gap * (1.0 - math.exp(-excess / gap))
+
+    raise ValueError(f"Mode de projection inconnu: {mode}")
+
+
 def load_ticker_map(path: Optional[Path]) -> Dict[str, str]:
     if path is None:
         return {}
@@ -382,6 +409,10 @@ def write_projection_csv(
     capital_initial: float,
     inflation: float,
     dca_mensuel: float,
+    projection_mode: str,
+    hard_cap_pct: Optional[float],
+    dynamic_start_pct: Optional[float],
+    dynamic_max_pct: Optional[float],
 ) -> None:
     etfs = rows
     if not etfs:
@@ -392,7 +423,7 @@ def write_projection_csv(
 
     matrix: List[List[str]] = []
 
-    col_count = 1 + len(etfs)
+    col_count = max(1 + len(etfs), 11)
 
     def blank_row() -> List[str]:
         return [""] * col_count
@@ -416,35 +447,56 @@ def write_projection_csv(
     set_cell(3, 1, fmt_number(dca_mensuel, 2))
     set_cell(4, 0, "Horizon (annees)")
     set_cell(4, 1, str(years))
+    set_cell(5, 0, "Mode projection CAGR")
+    set_cell(5, 1, projection_mode)
+    if projection_mode == "hard-cap":
+        set_cell(5, 2, "Cap dur (%)")
+        set_cell(5, 3, fmt_number(hard_cap_pct, 4))
+    if projection_mode == "dynamic-cap":
+        set_cell(5, 2, "Seuil dynamique (%)")
+        set_cell(5, 3, fmt_number(dynamic_start_pct, 4))
+        set_cell(5, 4, "Max asymptotique (%)")
+        set_cell(5, 5, fmt_number(dynamic_max_pct, 4))
 
-    set_cell(6, 0, "ETF")
-    set_cell(7, 0, "ISIN")
-    set_cell(8, 0, "CAGR brut annuel")
-    set_cell(9, 0, "TER annuel")
-    set_cell(10, 0, "Rendement net reel annuel")
+    set_cell(7, 0, "ETF")
+    set_cell(8, 0, "ISIN")
+    set_cell(9, 0, "CAGR brut annuel")
+    set_cell(10, 0, "CAGR projete annuel")
+    set_cell(11, 0, "TER annuel")
+    set_cell(12, 0, "Rendement net nominal annuel")
+    set_cell(13, 0, "Rendement net reel annuel")
 
     for idx, row in enumerate(etfs, start=2):
         col = excel_col_name(idx)
         etf_name = str(row.get("Nom ETF", ""))
         isin = str(row.get("ISIN", ""))
         cagr_pct = row.get("CAGR (%)") if isinstance(row.get("CAGR (%)"), (int, float)) else 0.0
+        projected_cagr_pct = adjust_projection_cagr_pct(
+            cagr_pct=float(cagr_pct),
+            mode=projection_mode,
+            hard_cap_pct=hard_cap_pct,
+            dynamic_start_pct=dynamic_start_pct,
+            dynamic_max_pct=dynamic_max_pct,
+        )
         ter_pct = row.get("TER (%)") if isinstance(row.get("TER (%)"), (int, float)) else 0.0
 
-        set_cell(6, idx - 1, etf_name)
-        set_cell(7, idx - 1, isin)
-        set_cell(8, idx - 1, f"={fmt_number(float(cagr_pct) / 100.0, 10)}")
-        set_cell(9, idx - 1, f"={fmt_number(float(ter_pct) / 100.0, 10)}")
-        set_cell(10, idx - 1, f"=(1+{col}9)*(1-{col}10)/(1+$B$3)-1")
+        set_cell(7, idx - 1, etf_name)
+        set_cell(8, idx - 1, isin)
+        set_cell(9, idx - 1, f"={fmt_number(float(cagr_pct) / 100.0, 10)}")
+        set_cell(10, idx - 1, f"={fmt_number(float(projected_cagr_pct) / 100.0, 10)}")
+        set_cell(11, idx - 1, f"={fmt_number(float(ter_pct) / 100.0, 10)}")
+        set_cell(12, idx - 1, f"=(1+{col}10)*(1-{col}11)-1")
+        set_cell(13, idx - 1, f"=(1+{col}12)/(1+$B$3)-1")
 
-    projection_header = 12
-    set_cell(projection_header, 0, "Annee")
+    nominal_header = 15
+    set_cell(nominal_header, 0, "Annee (capital nominal net TER)")
     for idx, row in enumerate(etfs, start=2):
         isin = str(row.get("ISIN", ""))
-        set_cell(projection_header, idx - 1, isin)
+        set_cell(nominal_header, idx - 1, isin)
 
-    start_data_row = projection_header + 1
+    nominal_start = nominal_header + 1
     for y in range(0, years + 1):
-        r = start_data_row + y
+        r = nominal_start + y
         set_cell(r, 0, str(y))
         for idx in range(2, 2 + len(etfs)):
             col = excel_col_name(idx)
@@ -452,12 +504,12 @@ def write_projection_csv(
                 set_cell(r, idx - 1, "=$B$2")
             else:
                 prev_r = r - 1
-                set_cell(r, idx - 1, f"={col}{prev_r + 1}*(1+{col}$11)+$B$4*12")
+                set_cell(r, idx - 1, f"={col}{prev_r + 1}*(1+{col}$13)+$B$4*12")
 
-    net_final_row = start_data_row + years
+    nominal_final_row = nominal_start + years
 
-    no_cost_header = net_final_row + 3
-    set_cell(no_cost_header, 0, "Annee (sans frais)")
+    no_cost_header = nominal_final_row + 3
+    set_cell(no_cost_header, 0, "Annee (sans frais sans inflation)")
     for idx, row in enumerate(etfs, start=2):
         isin = str(row.get("ISIN", ""))
         set_cell(no_cost_header, idx - 1, isin)
@@ -472,27 +524,57 @@ def write_projection_csv(
                 set_cell(r, idx - 1, "=$B$2")
             else:
                 prev_r = r - 1
-                set_cell(r, idx - 1, f"={col}{prev_r + 1}*(1+{col}$9)+$B$4*12")
+                set_cell(r, idx - 1, f"={col}{prev_r + 1}*(1+{col}$10)+$B$4*12")
 
     no_cost_final_row = no_cost_start + years
 
-    summary_header = no_cost_final_row + 3
+    real_header = no_cost_final_row + 3
+    set_cell(real_header, 0, "Annee (capital reel ajuste inflation)")
+    for idx, row in enumerate(etfs, start=2):
+        isin = str(row.get("ISIN", ""))
+        set_cell(real_header, idx - 1, isin)
+
+    real_start = real_header + 1
+    for y in range(0, years + 1):
+        r = real_start + y
+        nominal_r = nominal_start + y
+        set_cell(r, 0, str(y))
+        for idx in range(2, 2 + len(etfs)):
+            col = excel_col_name(idx)
+            if y == 0:
+                set_cell(r, idx - 1, f"={col}{nominal_r + 1}")
+            else:
+                set_cell(r, idx - 1, f"={col}{nominal_r + 1}/((1+$B$3)^{y})")
+
+    real_final_row = real_start + years
+
+    summary_header = real_final_row + 3
     set_cell(summary_header, 0, "ISIN")
     set_cell(summary_header, 1, "Nom ETF")
-    set_cell(summary_header, 2, "Capital final net reel")
-    set_cell(summary_header, 3, "Capital final sans frais")
-    set_cell(summary_header, 4, "Manque a gagner")
-    set_cell(summary_header, 5, "Manque a gagner %")
+    set_cell(summary_header, 2, "Capital final nominal net TER")
+    set_cell(summary_header, 3, "Capital final sans frais sans inflation")
+    set_cell(summary_header, 4, "Capital final reel (ajuste inflation)")
+    set_cell(summary_header, 5, "Manque a gagner frais")
+    set_cell(summary_header, 6, "Manque a gagner frais %")
+    set_cell(summary_header, 7, "Manque a gagner inflation")
+    set_cell(summary_header, 8, "Manque a gagner inflation %")
+    set_cell(summary_header, 9, "Manque a gagner total")
+    set_cell(summary_header, 10, "Manque a gagner total %")
 
     for i, row in enumerate(etfs, start=1):
         r = summary_header + i
         col = excel_col_name(i + 1)
         set_cell(r, 0, str(row.get("ISIN", "")))
         set_cell(r, 1, str(row.get("Nom ETF", "")))
-        set_cell(r, 2, f"={col}{net_final_row + 1}")
+        set_cell(r, 2, f"={col}{nominal_final_row + 1}")
         set_cell(r, 3, f"={col}{no_cost_final_row + 1}")
-        set_cell(r, 4, f"=D{r + 1}-C{r + 1}")
-        set_cell(r, 5, f"=E{r + 1}/D{r + 1}")
+        set_cell(r, 4, f"={col}{real_final_row + 1}")
+        set_cell(r, 5, f"=D{r + 1}-C{r + 1}")
+        set_cell(r, 6, f"=F{r + 1}/D{r + 1}")
+        set_cell(r, 7, f"=C{r + 1}-E{r + 1}")
+        set_cell(r, 8, f"=H{r + 1}/C{r + 1}")
+        set_cell(r, 9, f"=D{r + 1}-E{r + 1}")
+        set_cell(r, 10, f"=J{r + 1}/D{r + 1}")
 
     with path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.writer(f, delimiter=";")
@@ -552,7 +634,42 @@ def main() -> int:
         default=None,
         help="JSON optionnel de mapping ticker/isin (ex: ticker_isin_discovery.json)",
     )
+    parser.add_argument(
+        "--projection-mode",
+        choices=["raw", "hard-cap", "dynamic-cap"],
+        default="raw",
+        help="Mode de rendement pour la projection: raw, hard-cap, dynamic-cap (defaut: raw)",
+    )
+    parser.add_argument(
+        "--hard-cap-pct",
+        type=float,
+        default=None,
+        help="Cap dur (en %), requis si --projection-mode hard-cap",
+    )
+    parser.add_argument(
+        "--dynamic-start-pct",
+        type=float,
+        default=None,
+        help="Seuil a partir duquel la compression dynamique s'applique (en %), requis si --projection-mode dynamic-cap",
+    )
+    parser.add_argument(
+        "--dynamic-max-pct",
+        type=float,
+        default=None,
+        help="Plafond asymptotique (en %), requis si --projection-mode dynamic-cap",
+    )
     args = parser.parse_args()
+
+    if args.projection_mode == "hard-cap":
+        if args.hard_cap_pct is None:
+            parser.error("--hard-cap-pct est obligatoire quand --projection-mode hard-cap est utilise.")
+    if args.projection_mode == "dynamic-cap":
+        if args.dynamic_start_pct is None or args.dynamic_max_pct is None:
+            parser.error(
+                "--dynamic-start-pct et --dynamic-max-pct sont obligatoires quand --projection-mode dynamic-cap est utilise."
+            )
+        if args.dynamic_max_pct <= args.dynamic_start_pct:
+            parser.error("--dynamic-max-pct doit etre strictement superieur a --dynamic-start-pct.")
 
     input_dir = Path(args.input_dir)
     if not input_dir.exists() or not input_dir.is_dir():
@@ -573,6 +690,10 @@ def main() -> int:
         capital_initial=float(args.capital_initial),
         inflation=float(args.inflation),
         dca_mensuel=float(args.dca_mensuel),
+        projection_mode=str(args.projection_mode),
+        hard_cap_pct=float(args.hard_cap_pct) if args.hard_cap_pct is not None else None,
+        dynamic_start_pct=float(args.dynamic_start_pct) if args.dynamic_start_pct is not None else None,
+        dynamic_max_pct=float(args.dynamic_max_pct) if args.dynamic_max_pct is not None else None,
     )
 
     print(f"CSV synthese ecrit: {args.overview_csv}")

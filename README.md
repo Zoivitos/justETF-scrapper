@@ -123,6 +123,18 @@ python .\export_etf_csv.py
 python .\export_etf_csv.py .\output --overview-csv .\etf_overview.csv --projection-csv .\etf_projection.csv --years 30 --capital-initial 10000 --inflation 0.02 --dca-mensuel 250 --ticker-map .\ticker_isin_discovery.json
 ```
 
+Exemple avec cap dur du CAGR projete :
+
+```powershell
+python .\export_etf_csv.py .\output --projection-mode hard-cap --hard-cap-pct 10
+```
+
+Exemple avec cap dynamique du CAGR projete :
+
+```powershell
+python .\export_etf_csv.py .\output --projection-mode dynamic-cap --dynamic-start-pct 10 --dynamic-max-pct 12
+```
+
 ## Options disponibles
 
 ### Argument positionnel
@@ -223,6 +235,29 @@ python .\export_etf_csv.py .\output --overview-csv .\etf_overview.csv --projecti
   - Fichier JSON optionnel de mapping ISIN/Ticker (ex: `ticker_isin_discovery.json`).
   - Permet de remplir la colonne `Ticker` dans `etf_overview.csv`.
   - Defaut : non defini.
+
+- `--projection-mode {raw,hard-cap,dynamic-cap}`
+  - Mode de rendement utilise dans la projection:
+    - `raw` : utilise le CAGR brut.
+    - `hard-cap` : applique un cap dur au CAGR projete.
+    - `dynamic-cap` : compresse les CAGR eleves avec une fonction asymptotique.
+  - Defaut : `raw`.
+
+- `--hard-cap-pct HARD_CAP_PCT`
+  - Cap dur du CAGR projete (en %).
+  - Obligatoire si `--projection-mode hard-cap`.
+  - Exemple : `10`.
+
+- `--dynamic-start-pct DYNAMIC_START_PCT`
+  - Seuil (en %) a partir duquel la compression dynamique commence.
+  - Obligatoire si `--projection-mode dynamic-cap`.
+  - Exemple : `10`.
+
+- `--dynamic-max-pct DYNAMIC_MAX_PCT`
+  - Plafond asymptotique (en %) du mode dynamique, jamais atteint.
+  - Obligatoire si `--projection-mode dynamic-cap`.
+  - Doit etre strictement superieur a `--dynamic-start-pct`.
+  - Exemple : `12`.
 
 ## Structure des fichiers de sortie
 

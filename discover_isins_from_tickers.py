@@ -442,7 +442,7 @@ def main() -> int:
         help="Nombre max de pages API par ticker (defaut: 20)",
     )
     parser.add_argument(
-        "--errors-output",
+        "--errors-output2",
         type=Path,
         default=Path("ticker_isin_discovery_errors.json"),
         help="Fichier JSON de sortie des erreurs (defaut: ticker_isin_discovery_errors.json)",
